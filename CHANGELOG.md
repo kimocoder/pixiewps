@@ -1,7 +1,9 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.4.4] - 2019-08-13
+- Allow to set seed end to 0x7FFFFFFF 
+- Push timestamps to it's limit
 
 ## [1.4.2] - 2018-01-25
 ### Added

@@ -181,6 +181,12 @@ unsigned int get_unix_datetime(char *s, time_t *datetime)
 	if (len == 4) {
 		if (get_int(s, &year))
 			return 1;
+		if (year == 1901)
+			month = 12;
+		if (year == 2038)
+			month = 2;
+		if (year < 1901 || year > 2038)
+			return 1;
 	}
 	else if (len == 7) {
 		if (s[2] != '/' && s[2] != '-' && s[2] != '.')
@@ -206,7 +212,7 @@ unsigned int get_unix_datetime(char *s, time_t *datetime)
 
 		if (get_int(s_month, &month) || get_int(s_year, &year))
 			return 1;
-		if (year < 1970 || year > 2038 || month < 1 || month > 12 || (month > 2 && year == 2038))
+		if (year < 1901 || year > 2038 || month < 1 || month > 12 || (month > 2 && year == 2038))
 			return 1;
 	}
 	else {
@@ -223,7 +229,17 @@ unsigned int get_unix_datetime(char *s, time_t *datetime)
 			.tm_mday = 1 };
 		*datetime = c_timegm(&t);
 
-		if (*datetime < 0) /* When time_t is 64 bits this check is pointless */
+	if (year == 1901 && month == 12)
+	{
+		*datetime = (time_t) 0x80000000;
+		return 0;
+	}
+	if (year == 2038 && month == 2)
+	{
+		*datetime = (time_t) 0x7FFFFFFF;
+		return 0;
+	}
+	if (year == 1901 && month < 12)
 			return 1;
 	}
 
