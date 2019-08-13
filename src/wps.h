@@ -1,8 +1,7 @@
 /*
- * Pixiewps: bruteforce the wps pin exploiting the low or non-existing entropy of some APs (pixie dust attack).
- *           All credits for the research go to Dominique Bongard.
+ * pixiewps: offline WPS brute-force utility that exploits low entropy PRNGs
  *
- * Copyright (c) 2015-2016, wiire <wi7ire@gmail.com>
+ * Copyright (c) 2015-2017, wiire <wi7ire@gmail.com>
  * SPDX-License-Identifier: GPL-3.0+
  *
  * This program is free software: you can redistribute it and/or modify
@@ -14,9 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef WPS_H
 #define WPS_H
@@ -33,12 +29,53 @@
 #define WPS_PSK_LEN          16
 #define WPS_BSSID_LEN         6
 
+#define ENC_SETTINGS_LEN    256 /* There is not a max length */
+#define MAX_PSK_LEN          64
+
 #include <stdlib.h>
 #include <string.h>
 
-#include "pixiewps.h"
 #include "config.h"
+#include "pixiewps.h"
 #include "utils.h"
+
+struct ie_vtag {
+	uint16_t id;
+#define WPS_TAG_E_SNONCE_1   "\x10\x16"
+#define WPS_TAG_E_SNONCE_2   "\x10\x17"
+#define WPS_TAG_SSID         "\x10\x45"
+#define WPS_TAG_BSSID        "\x10\x20"
+#define WPS_TAG_AUTH_TYPE    "\x10\x03"
+#define WPS_TAG_ENC_TYPE     "\x10\x0F"
+#define WPS_TAG_NET_KEY      "\x10\x27"
+#define WPS_TAG_NET_KEY_IDX  "\x10\x28"
+#define WPS_TAG_KEYWRAP_AUTH "\x10\x1E"
+	uint16_t len;
+#define WPS_TAG_AUTH_TYPE_LEN    2
+#define WPS_TAG_ENC_TYPE_LEN     2
+#define WPS_TAG_NET_KEY_IDX_LEN  1
+#define WPS_TAG_KEYWRAP_AUTH_LEN 8
+	uint8_t data[];
+} __attribute__((packed));
+#define	VTAG_SIZE (sizeof(struct ie_vtag))
+
+struct ie_vtag *find_vtag(void *vtagp, int vtagl, void *vidp, int vlen)
+{
+	uint8_t *vid = vidp;
+	struct ie_vtag *vtag = vtagp;
+	while (0 < vtagl) {
+		const int len = end_ntoh16(vtag->len);
+		if (vid && memcmp(vid, &vtag->id, 2) != 0)
+			goto next_vtag;
+		if (!vlen || len == vlen)
+			return vtag;
+
+next_vtag:
+		vtagl -= len + VTAG_SIZE;
+		vtag = (struct ie_vtag *)((uint8_t *)vtag + len + VTAG_SIZE);
+	}
+	return NULL;
+}
 
 /* Diffie-Hellman group */
 static const uint8_t dh_group5_generator[1] = { 0x02 };
@@ -65,17 +102,18 @@ static const uint8_t kdf_salt[] = {
 };
 
 /* Key Derivation Function */
-void kdf(const void *key, uint8_t *res) {
+void kdf(const void *key, uint8_t *res)
+{
 	const uint32_t kdk_len = (WPS_AUTHKEY_LEN + WPS_KEYWRAPKEY_LEN + WPS_EMSK_LEN) * 8;
 	uint_fast8_t j = 0;
 
 	uint8_t *buffer = malloc(sizeof(kdf_salt) + sizeof(uint32_t) * 2);
 
 	for (uint32_t i = 1; i < 4; i++) {
-		uint32_t be = h32_to_be(i);
+		uint32_t be = end_htobe32(i);
 		memcpy(buffer, &be, sizeof(uint32_t));
 		memcpy(buffer + sizeof(uint32_t), kdf_salt, sizeof(kdf_salt));
-		be = h32_to_be(kdk_len);
+		be = end_htobe32(kdk_len);
 		memcpy(buffer + sizeof(uint32_t) + sizeof(kdf_salt), &be, sizeof(uint32_t));
 		hmac_sha256(key, WPS_HASH_LEN, buffer, sizeof(kdf_salt) + sizeof(uint32_t) * 2, res + j);
 		j += WPS_HASH_LEN;
@@ -83,8 +121,50 @@ void kdf(const void *key, uint8_t *res) {
 	free(buffer);
 }
 
+/* Decrypt encrypted settings in M7-M8 */
+uint8_t *decrypt_encr_settings(uint8_t *keywrapkey, const uint8_t *encr, size_t encr_len)
+{
+	uint8_t *decrypted;
+	const size_t block_size = 16;
+	size_t i;
+	uint8_t pad;
+	const uint8_t *pos;
+	size_t n_encr_len;
+
+	/* AES-128-CBC */
+	if (encr == NULL || encr_len < 2 * block_size || encr_len % block_size)
+		return NULL;
+
+	decrypted = malloc(encr_len - block_size);
+	if (decrypted == NULL)
+		return NULL;
+
+	memcpy(decrypted, encr + block_size, encr_len - block_size);
+	n_encr_len = encr_len - block_size;
+	if (aes_128_cbc_decrypt(keywrapkey, encr, decrypted, n_encr_len)) {
+		free(decrypted);
+		return NULL;
+	}
+
+	pos = decrypted + n_encr_len - 1;
+	pad = *pos;
+	if (pad > n_encr_len) {
+		free(decrypted);
+		return NULL;
+	}
+	for (i = 0; i < pad; i++) {
+		if (*pos-- != pad) {
+			free(decrypted);
+			return NULL;
+		}
+	}
+
+	return decrypted;
+}
+
 /* Pin checksum computing */
-inline uint_fast8_t wps_pin_checksum(uint_fast32_t pin) {
+static inline uint_fast8_t wps_pin_checksum(uint_fast32_t pin)
+{
 	unsigned int acc = 0;
 	while (pin) {
 		acc += 3 * (pin % 10);
@@ -96,12 +176,14 @@ inline uint_fast8_t wps_pin_checksum(uint_fast32_t pin) {
 }
 
 /* Validity PIN control based on checksum */
-inline uint_fast8_t wps_pin_valid(uint_fast32_t pin) {
+static inline uint_fast8_t wps_pin_valid(uint_fast32_t pin)
+{
 	return wps_pin_checksum(pin / 10) == (pin % 10);
 }
 
 /* Checks if PKe == 2 */
-inline uint_fast8_t check_small_dh_keys(const uint8_t *data) {
+static inline uint_fast8_t check_small_dh_keys(const uint8_t *data)
+{
 	uint_fast8_t i = WPS_PKEY_LEN - 2;
 	while (--i) {
 		if (data[i] != 0)

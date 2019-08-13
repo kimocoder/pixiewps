@@ -1,8 +1,7 @@
 /*
- * Pixiewps: bruteforce the wps pin exploiting the low or non-existing entropy of some APs (pixie dust attack).
- *           All credits for the research go to Dominique Bongard.
+ * pixiewps: offline WPS brute-force utility that exploits low entropy PRNGs
  *
- * Copyright (c) 2015-2016, wiire <wi7ire@gmail.com>
+ * Copyright (c) 2015-2017, wiire <wi7ire@gmail.com>
  * SPDX-License-Identifier: GPL-3.0+
  *
  * This program is free software: you can redistribute it and/or modify
@@ -14,9 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef PIXIEWPS_H
 #define PIXIEWPS_H
@@ -31,8 +27,7 @@
 
 /* Modes constants */
 #define MODE_LEN              5
-#define MODE3_DAYS            3
-#define MODE3_TRIES           3
+#define MODE3_TRIES   (60 * 10)
 #define SEC_PER_DAY       86400
 
 /* Exit costants */
@@ -40,6 +35,7 @@
 #define PIN_ERROR             1
 #define MEM_ERROR             2
 #define ARG_ERROR             3
+#define UNS_ERROR             4
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,17 +43,33 @@
 
 #include "utils.h"
 
+#ifndef WPS_PIN_LEN
+# define WPS_PIN_LEN          8
+#endif
+
 #if defined(DEBUG)
-# define DEBUG_PRINT(fmt, args...); fprintf(stderr, "\n [DEBUG] %s:%d:%s(): " fmt, \
-	__FILE__, __LINE__, __func__, ##args); fflush(stdout);
-# define DEBUG_PRINT_ARRAY(b, l); byte_array_print(b, l); fflush(stdout);
+# define DEBUG_PRINT(fmt, args...) do { printf("\n [DEBUG] %s:%4d:%s(): " fmt, \
+	__FILE__, __LINE__, __func__, ##args); fflush(stdout); } while (0)
+# define DEBUG_PRINT_ARRAY(b, l) do { byte_array_print(b, l); fflush(stdout); } while (0)
+# define DEBUG_PRINT_ATTEMPT(s, z) \
+		do { \
+			printf("\n [DEBUG] %s:%4d:%s(): Trying with E-S1: ",  __FILE__, __LINE__, __func__); \
+			byte_array_print(s, WPS_SECRET_NONCE_LEN); \
+			printf("\n [DEBUG] %s:%4d:%s(): Trying with E-S1: ",  __FILE__, __LINE__, __func__); \
+			byte_array_print(z, WPS_SECRET_NONCE_LEN); \
+			fflush(stdout); \
+		} while (0)
 #else
-# define DEBUG_PRINT(fmt, args...)
-# define DEBUG_PRINT_ARRAY(b, l)
+# define DEBUG_PRINT(fmt, args...) do {} while (0)
+# define DEBUG_PRINT_ARRAY(b, l) do {} while (0)
+# define DEBUG_PRINT_ATTEMPT(s, z) do {} while (0)
 #endif
 
 uint_fast8_t p_mode[MODE_LEN] = { 0 };
-const char *p_mode_name[MODE_LEN + 1] = { "", "RT/MT", "eCos simple", "RTL819x", "eCos simplest", "eCos Knuth" };
+const char *p_mode_name[MODE_LEN + 1] = { "", "RT/MT/CL", "eCos simple", "RTL819x", "eCos simplest", "eCos Knuth" };
+
+/* Also called 'porting' OpenSSL */
+#define SET_RTL_PRIV_KEY(x) memset(x, 0x55, 192)
 
 const uint8_t wps_rtl_pke[] = {
 	0xD0,0x14,0x1B,0x15, 0x65,0x6E,0x96,0xB8, 0x5F,0xCE,0xAD,0x2E, 0x8E,0x76,0x33,0x0D,
@@ -74,16 +86,18 @@ const uint8_t wps_rtl_pke[] = {
 	0x66,0xA5,0xA4,0x90, 0x47,0x2C,0xEB,0xA9, 0xE3,0xB4,0x22,0x4F, 0x3D,0x89,0xFB,0x2B
 };
 
-const uint8_t rtl_rnd_seed[] = {
+/* const uint8_t rtl_rnd_seed[] = {
 	0x52,0x65,0x61,0x6c, 0x74,0x65,0x6b,0x20, 0x57,0x69,0x46,0x69, 0x20,0x53,0x69,0x6d,
 	0x70,0x6c,0x65,0x2d, 0x43,0x6f,0x6e,0x66, 0x69,0x67,0x20,0x44, 0x61,0x65,0x6d,0x6f,
 	0x6e,0x20,0x70,0x72, 0x6f,0x67,0x72,0x61, 0x6d,0x20,0x32,0x30, 0x30,0x36,0x2d,0x30,
 	0x35,0x2d,0x31,0x35
-};
+}; */
 
 struct global {
+	char pin[WPS_PIN_LEN + 1];
 	uint8_t *pke;
 	uint8_t *pkr;
+	uint8_t *e_key;
 	uint8_t *e_hash1;
 	uint8_t *e_hash2;
 	uint8_t *authkey;
@@ -91,6 +105,7 @@ struct global {
 	uint8_t *r_nonce;
 	uint8_t *psk1;
 	uint8_t *psk2;
+	uint8_t *empty_psk;
 	uint8_t *dhkey;
 	uint8_t *kdk;
 	uint8_t *wrapkey;
@@ -98,12 +113,21 @@ struct global {
 	uint8_t *e_s1;
 	uint8_t *e_s2;
 	uint8_t *e_bssid;
+	uint8_t *m5_encr;
+	uint8_t *m7_encr;
+	unsigned int m5_encr_len;
+	unsigned int m7_encr_len;
+	uint32_t nonce_seed;
+	uint32_t s1_seed;
+	uint32_t s2_seed;
 	time_t start;
 	time_t end;
 	uint8_t small_dh_keys;
 	uint8_t mode_auto;
 	uint8_t bruteforce;
 	uint8_t anylength;
+	uint8_t nonce_match;
+	int jobs;
 	int verbosity;
 	char *error;
 	char *warning;
@@ -111,12 +135,12 @@ struct global {
 
 char usage[] =
 	"\n"
-	" Pixiewps %s WPS pixie dust attack tool\n"
-	" Copyright (c) 2015-2016, wiire <wi7ire@gmail.com>\n"
+	" Pixiewps %s WPS pixie-dust attack tool\n"
+	" Copyright (c) 2015-2017, wiire <wi7ire@gmail.com>\n"
 	"\n"
 	" Usage: %s <arguments>\n"
 	"\n"
-	" Required Arguments:\n"
+	" Required arguments:\n"
 	"\n"
 	"   -e, --pke         : Enrollee public key\n"
 	"   -r, --pkr         : Registrar public key\n"
@@ -125,100 +149,123 @@ char usage[] =
 	"   -a, --authkey     : Authentication session key\n"
 	"   -n, --e-nonce     : Enrollee nonce\n"
 	"\n"
-	" Optional Arguments:\n"
+	" Optional arguments:\n"
 	"\n"
 	"   -m, --r-nonce     : Registrar nonce\n"
 	"   -b, --e-bssid     : Enrollee BSSID\n"
-	"   -S, --dh-small    : Small Diffie-Hellman keys (PKr not needed)  [No]\n"
-	"   -f, --force       : Brute-force timestamp seed\n"
-	"   -l, --length      : Brute-force entire pin length (experimental)\n"
 	"   -v, --verbosity   : Verbosity level 1-3, 1 is quietest           [3]\n"
 	"   -o, --output      : Write output to file\n"
+	"   -j, --jobs        : Number of parallel threads to use         [Auto]\n"
 	"\n"
 	"   -h                : Display this usage screen\n"
 	"   --help            : Verbose help and more usage examples\n"
-	"   -V, --version     : Displays version\n"
+	"   -V, --version     : Display version\n"
 	"\n"
 	"   --mode N[,... N]  : Mode selection, comma separated           [Auto]\n"
-	"   --start [mm/]yyyy : Starting date (only mode 3)       [Current time]\n"
-	"   --end   [mm/]yyyy : Ending date   (only mode 3)            [-3 days]\n"
+	"   --start [mm/]yyyy : Starting date             (only mode 3) [+1 day]\n"
+	"   --end   [mm/]yyyy : Ending date               (only mode 3) [-1 day]\n"
+	"   -f, --force       : Bruteforce full range     (only mode 3)\n"
 	"\n"
-	" Example:\n"
+	" Miscellaneous arguments:\n"
+	"\n"
+	"   -7, --m7-enc      : Recover encrypted settings from M7 (only mode 3)\n"
+	"   -5, --m5-enc      : Recover secret nonce from M5       (only mode 3)\n"
+	"\n"
+	" Example (use --help for more):\n"
 	"\n"
 	" pixiewps -e <pke> -r <pkr> -s <e-hash1> -z <e-hash2> -a <authkey> -n <e-nonce>\n"
 	"%s";
 
 char v_usage[] =
 	"\n"
-	" Pixiewps %s WPS pixie dust attack tool\n"
-	" Copyright (c) 2015-2016, wiire <wi7ire@gmail.com>\n"
+	" Pixiewps %s WPS pixie-dust attack tool\n"
+	" Copyright (c) 2015-2017, wiire <wi7ire@gmail.com>\n"
 	"\n"
 	" Description of arguments:\n"
 	"\n"
 	" -e, --pke\n"
 	"\n"
-	"    Enrollee DH public key, found in M1.\n"
+	"     Enrollee's DH public key, found in M1.\n"
 	"\n"
 	" -r, --pkr\n"
 	"\n"
-	"    Registrar DH public key, found in M2. It can be avoided by specifying "
-	"--dh-small in both Reaver and Pixiewps.\n"
-	"\n"
-	"  [?] pixiewps -e <pke> -s <e-hash1> -z <e-hash2> -a <authkey> -n <e-nonce> -S\n"
+	"     Registrar's DH public key, found in M2.\n"
 	"\n"
 	" -s, --e-hash1\n"
 	"\n"
-	"    Enrollee hash-1, found in M3.\n"
+	"     Enrollee hash-1, found in M3. It's the hash of the first half of the PIN.\n"
 	"\n"
 	" -z, --e-hash2\n"
 	"\n"
-	"    Enrollee hash-2, found in M3.\n"
+	"     Enrollee hash-2, found in M3. It's the hash of the second half of the PIN.\n"
 	"\n"
 	" -a, --authkey\n"
 	"\n"
-	"    Authentication session key. Although for this parameter a modified version of "
+	"     Authentication session key. Although for this parameter a modified version of "
 	"Reaver or Bully is needed, it can be avoided by specifying small Diffie-Hellman "
 	"keys in both Reaver and Pixiewps and supplying --e-nonce, --r-nonce and --e-bssid.\n"
 	"\n"
-	"  [?] pixiewps -e <pke> -s <e-hash1> -z <e-hash2> -S -n <e-nonce> -m <r-nonce> -b <e-bssid>\n"
+	" [?] pixiewps -e <pke> -s <e-hash1> -z <e-hash2> -S -n <e-nonce> -m <r-nonce> -b <e-bssid>\n"
 	"\n"
 	" -n, --e-nonce\n"
 	"\n"
-	"    Enrollee's nonce, found in M1.\n"
+	"     Enrollee's nonce, found in M1.\n"
 	"\n"
 	" -m, --r-nonce\n"
 	"\n"
-	"    Registrar's nonce, found in M2.\n"
+	"     Registrar's nonce, found in M2. Used with other parameters to compute the session keys.\n"
 	"\n"
 	" -b, --e-bssid\n"
 	"\n"
-	"    Enrollee's BSSID.\n"
+	"     Enrollee's BSSID. Used with other parameters to compute the session keys.\n"
 	"\n"
-	" -S, --dh-small\n"
+	" -S, --dh-small (deprecated)\n"
 	"\n"
-	"    Small Diffie-Hellman keys. The same option MUST be specified in Reaver "
-	"(1.3 or later versions) too. This option DOES NOT WORK (currently) with mode 3.\n"
+	"     Small Diffie-Hellman keys. The same option must be specified in Reaver too. "
+	"Some Access Points seem to be buggy and don't behave correctly with this option. "
+	"Avoid using it with Reaver when possible\n"
 	"\n"
 	" --mode N[,... N]\n"
 	"\n"
-	"    Select modes, comma separated (experimental modes are not used unless specified):\n"
+	"     Select modes, comma separated (experimental modes are not used unless specified):\n"
 	"\n"
-	"      1 (%s)\n"
-	"      2 (%s)\n"
-	"      3 (%s)\n"
-	"      4 (%s) [Experimental]\n"
-	"      5 (%s)    [Experimental]\n"
+	"         1 (%s)\n"
+	"         2 (%s)\n"
+	"         3 (%s)\n"
+	"         4 (%s) [Experimental]\n"
+	"         5 (%s)    [Experimental]\n"
 	"\n"
 	" --start [mm/]yyyy\n"
 	" --end   [mm/]yyyy\n"
 	"\n"
-	"    Starting and ending dates for mode 3. They are interchangeable. "
-	"If only one is specified, the machine current time will be used for the other. "
-	"The earliest possible date is 01/1970 corresponding to 0 (Epoch time).\n"
+	"     Starting and ending dates for mode 3. They are interchangeable. "
+	"If only one is specified, the current time will be used for the other. "
+	"The earliest possible date is 01/1970, corresponding to 0 (Unix epoch time), "
+	"the latest is 02/2038, corresponding to 0x7FFFFFFF. If --force is used then "
+	"pixiewps will start from the current time and go back all the way to 0.\n"
+	"\n"
+	" -7, --m7-enc\n"
+	"\n"
+	"     Encrypted settings, found in M7. Recover Enrollee's WPA-PSK and secret nonce 2. "
+	"This feature only works on some Access Points vulnerable to mode 3.\n"
+	"\n"
+	" [?] pixiewps -e <pke> -r <pkr> -n <e-nonce> -m <r-nonce> -b <e-bssid> -7 <enc7> --mode 3\n"
+	"\n"
+	" -5, --m5-enc\n"
+	"\n"
+	"     Encrypted settings, found in M5. Recover Enrollee's secret nonce 1. "
+	"This option must be used in conjunction with --m7-enc. If --e-hash1 and "
+	"--e-hash2 are also specified, pixiewps will also recover the WPS PIN.\n"
+	"\n"
+	" [?] pixiewps -e <pke> -r <pkr> -n <e-nonce> -m <r-nonce> -b <e-bssid> -7 <enc7> -5 <enc5> --mode 3\n"
+	" [?] pixiewps -e <pke> -r <pkr> -n <e-nonce> -m <r-nonce> -b <e-bssid> -7 <enc7> -5 <enc5> -s <e-hash1> -z <e-hash2> --mode 3\n"
 	"\n";
 
+#define STR_CONTRIBUTE "[@] Looks like you have some interesting data! Please consider contributing with your data to improve pixiewps. Follow the instructions on http://0x0.st/tm - Thank you!"
+
 /* One digit comma separated number parsing */
-inline uint_fast8_t parse_mode(char *list, uint_fast8_t *dst, const uint8_t max_digit) {
+static inline uint_fast8_t parse_mode(char *list, uint_fast8_t *dst, const uint8_t max_digit)
+{
 	uint_fast8_t cnt = 0;
 	while (*list != 0) {
 		if (*list <= ((char) max_digit) + '0') {
@@ -236,9 +283,10 @@ inline uint_fast8_t parse_mode(char *list, uint_fast8_t *dst, const uint8_t max_
 	return 0;
 }
 
-/* Checks if passed mode is selected */
-inline uint_fast8_t is_mode_selected(const uint_fast8_t mode) {
-	for (uint_fast8_t i = 0; p_mode[i] != NONE && i < MODE_LEN; i++) {
+/* Check if passed mode is selected */
+static inline uint_fast8_t is_mode_selected(const uint_fast8_t mode)
+{
+	for (uint_fast8_t i = 0; i < MODE_LEN && p_mode[i] != NONE; i++) {
 		if (p_mode[i] == mode)
 			return 1;
 	}
