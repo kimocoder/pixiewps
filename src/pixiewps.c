@@ -462,6 +462,13 @@ static void empty_pin_hmac(struct global *wps)
 	hmac_sha256(wps->authkey, WPS_AUTHKEY_LEN, NULL, 0, wps->empty_psk);
 }
 
+static char* format_time(time_t t, char* buf30)
+{
+	struct tm ts;
+	strftime(buf30, 30, "%c", gmtime_r(&t, &ts));
+	return buf30;
+}
+
 int main(int argc, char **argv)
 {
 	struct global *wps;
@@ -601,18 +608,14 @@ memory_err:
 					unsigned int cores = hardware_concurrency();
 					struct timeval t_current;
 					gettimeofday(&t_current, 0);
-					time_t r_time;
-					struct tm ts;
 					char buffer[30];
-					r_time = t_current.tv_sec;
-					ts = *gmtime(&r_time);
-					strftime(buffer, 30, "%c", &ts);
 					fprintf(stderr, "\n ");
 					printf("Pixiewps %s", LONG_VERSION); fflush(stdout);
 					fprintf(stderr, "\n\n"
 							" [*] System time: %lu (%s UTC)\n"
 							" [*] Number of cores available: %u\n\n",
-							(unsigned long) t_current.tv_sec, buffer, cores == 0 ? 1 : cores);
+							(unsigned long) t_current.tv_sec,
+							format_time(t_current.tv_sec, buffer), cores == 0 ? 1 : cores);
 					free(wps->error);
 					free(wps);
 					return ARG_ERROR;
@@ -1273,16 +1276,13 @@ if (wps->bruteforce && (start_set || end_set)) {
 
 						#if DEBUG
 						{
-							struct tm ts;
 							char buffer[30];
-							ts = *gmtime(&wps->start);
-							strftime(buffer, 30, "%c", &ts);
 							printf("\n [DEBUG] %s:%d:%s(): Start: %10lu (%s UTC)",
-								__FILE__, __LINE__, __func__, (unsigned long) wps->start, buffer);
-							ts = *gmtime(&wps->end);
-							strftime(buffer, 30, "%c", &ts);
+								__FILE__, __LINE__, __func__, (unsigned long) wps->start,
+								format_time(wps->start, buffer));
 							printf("\n [DEBUG] %s:%d:%s(): End:   %10lu (%s UTC)",
-								__FILE__, __LINE__, __func__, (unsigned long) wps->end, buffer);
+								__FILE__, __LINE__, __func__, (unsigned long) wps->end,
+								format_time(wps->end, buffer));
 							fflush(stdout);
 						}
 						#endif
@@ -1429,24 +1429,19 @@ if (wps->bruteforce && (start_set || end_set)) {
 			if (found_p_mode == RTL819x) {
 				if (wps->nonce_seed) {
 					time_t seed_time;
-					struct tm ts;
 					char buffer[30];
 
-					printf("\n [*] Seed N1:  %u", wps->nonce_seed);
 					seed_time = wps->nonce_seed;
-					ts = *gmtime(&seed_time);
-					strftime(buffer, 30, "%c", &ts);
-					printf(" (%s UTC)", buffer);
-					printf("\n [*] Seed ES1: %u", wps->s1_seed);
+					printf("\n [*] Seed N1:  %u", (unsigned) seed_time);
+					printf(" (%s UTC)", format_time(seed_time, buffer));
+
 					seed_time = wps->s1_seed;
-					ts = *gmtime(&seed_time);
-					strftime(buffer, 30, "%c", &ts);
-					printf(" (%s UTC)", buffer);
-					printf("\n [*] Seed ES2: %u", wps->s2_seed);
+					printf("\n [*] Seed ES1: %u", (unsigned) seed_time);
+					printf(" (%s UTC)", format_time(seed_time, buffer));
+
 					seed_time = wps->s2_seed;
-					ts = *gmtime(&seed_time);
-					strftime(buffer, 30, "%c", &ts);
-					printf(" (%s UTC)", buffer);
+					printf("\n [*] Seed ES2: %u", (unsigned) seed_time);
+					printf(" (%s UTC)", format_time(seed_time, buffer));
 				}
 				else {
 					printf("\n [*] Seed N1:  -");
